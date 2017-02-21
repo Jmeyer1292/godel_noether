@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<library path="lib/libgodel_noether_meshing">
+  <class type="godel_noether::NoetherMesher" base_class_type="meshing_plugins_base::MeshingBase">
+  <description> Implements Godel meshing interface using the IR&D Meshing Tool </description>
+  </class>
+</library>
