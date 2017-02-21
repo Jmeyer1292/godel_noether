@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<library path="lib/libgodel_noether_path_planning">
+  <class type="godel_noether::NoetherPathPlanner" base_class_type="path_planning_plugins_base::PathPlanningBase">
+  <description>Implements the Godel tool planner interface using the IR&D tool planner</description>
+  </class>
+</library>

@@ -10,6 +10,7 @@ add_definitions(-std=c++11)
 find_package(catkin REQUIRED COMPONENTS
   meshing_plugins_base
   noether
+  noether_conversions
   path_planning_plugins_base
 )
 
@@ -106,9 +107,11 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES
     godel_noether_meshing
+    godel_noether_path_planning
   CATKIN_DEPENDS
     meshing_plugins_base
     noether
+    noether_conversions
     path_planning_plugins_base
 #  DEPENDS system_lib
 )
@@ -129,10 +132,15 @@ add_library(godel_noether_meshing
   src/noether_mesher.cpp
 )
 
+add_library(godel_noether_path_planning
+  src/noether_path_planner.cpp
+)
+
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
 add_dependencies(godel_noether_meshing ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(godel_noether_path_planning ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
@@ -151,6 +159,9 @@ add_dependencies(godel_noether_meshing ${${PROJECT_NAME}_EXPORTED_TARGETS} ${cat
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(godel_noether_meshing
+  ${catkin_LIBRARIES}
+)
+target_link_libraries(godel_noether_path_planning
   ${catkin_LIBRARIES}
 )
 
