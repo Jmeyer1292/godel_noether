@@ -4,6 +4,7 @@
 #include <ros/console.h>
 #include <noether/noether.h>
 #include <noether_conversions/noether_conversions.h>
+#include <path_sequence_planner/simple_path_sequence_planner.h>
 
 namespace
 {
@@ -21,7 +22,8 @@ tool_path_planner::ProcessTool loadTool()
 }
 
 std::vector<tool_path_planner::ProcessPath>
-planPaths(vtkSmartPointer<vtkPolyData> mesh, const tool_path_planner::ProcessTool& tool)
+planPaths(vtkSmartPointer<vtkPolyData> mesh,
+          const tool_path_planner::ProcessTool& tool)
 {
   std::vector<vtkSmartPointer<vtkPolyData>> meshes;
   meshes.push_back(mesh);
@@ -30,7 +32,6 @@ planPaths(vtkSmartPointer<vtkPolyData> mesh, const tool_path_planner::ProcessToo
   planner.setTool(tool);
   std::vector<std::vector<tool_path_planner::ProcessPath>> paths;
   planner.planPaths(meshes, paths);
-
   assert(paths.size() == 1);
   return paths.front();
 }
@@ -42,7 +43,8 @@ void godel_noether::NoetherPathPlanner::init(pcl::PolygonMesh mesh)
   mesh_ = mesh;
 }
 
-bool godel_noether::NoetherPathPlanner::generatePath(std::vector<geometry_msgs::PoseArray> &path)
+bool godel_noether::NoetherPathPlanner::generatePath(
+    std::vector<geometry_msgs::PoseArray> &path)
 {
   ROS_INFO("Starting Noether path planning...");
   auto vtk_data = vtkSmartPointer<vtkPolyData>::New();
@@ -54,8 +56,13 @@ bool godel_noether::NoetherPathPlanner::generatePath(std::vector<geometry_msgs::
   auto process_paths = planPaths(vtk_data, tool);
   ROS_INFO("generatePath: finished planning paths");
 
+  //Sequence Paths
+  path_sequence_planner::SimplePathSequencePlanner sequencer;
+  sequencer.setPaths(process_paths);
+  sequencer.linkPaths();
+
   // Convert to ROS pose array types
-  path = posesConvertVTKtoGeometryMsgs(process_paths);
+  path = noether::convertVTKtoGeometryMsgs(sequencer.getPaths());
   ROS_INFO("generatePath: converted to ROS messages - DONE!");
 
   return true;
