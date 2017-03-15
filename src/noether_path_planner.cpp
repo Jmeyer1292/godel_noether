@@ -6,79 +6,81 @@
 #include <noether_conversions/noether_conversions.h>
 #include <path_sequence_planner/simple_path_sequence_planner.h>
 #include <eigen_conversions/eigen_msg.h>
+#include <Eigen/Dense>
+#include <eigen_stl_containers/eigen_stl_containers.h>
 
 namespace
 {
 
+/**
+ * @brief Structure to store the first and last positions of the path segments. This is all the info
+ * we need to make decisions about path order as we currently don't split paths up.
+ *
+ * The \e a and \e b fields do not indicate any spatial relationship and are merely to uniquely
+ * identify the two end points of a line segment.
+ *
+ * The \id field here is used to store the index of the input path that corresponds to this
+ * segment. These points are sorted so this field is used to reconstruct the result at the end.
+ */
 struct PathEndPoints
 {
-  geometry_msgs::Point a;
-  geometry_msgs::Point b;
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  Eigen::Vector3d a;
+  Eigen::Vector3d b;
+  size_t id;
 };
 
+/**
+ * @brief A structure to hold the path segments and their direction. The \e id field indicates the
+ * index into the PathEndPoints sequence that corresponds to this method. The \e from_a field is used
+ * to indicate whether the path should go A to B or B to A. A true value indicates A to B.
+ */
 struct SequencePoint
 {
-  int id;
+  size_t id;
   bool from_a;
 };
 
-std::vector<PathEndPoints> toEndPoints(const std::vector<geometry_msgs::PoseArray>& segments)
+/**
+ * @brief From a sequence of path segments, this method extracts the end points and puts them into
+ * a new reference frame. As segments are indivisible, we only need the extremes for sorting them.
+ * @param segments The source of path segment data
+ * @param ref_rotation A transform from the origin to a reference frame which we want all the end
+ * points in. The paths in \e segments are considered to be in the origin frame.
+ * @return A sequence of end points in the reference frame of \e ref_rotation
+ */
+std::vector<PathEndPoints> toEndPoints(const std::vector<EigenSTL::vector_Affine3d>& segments,
+                                       const Eigen::Quaterniond& ref_rotation)
 {
+  // Ref rotation is the Target Frame w.r.t. Origin
+  // The points are all w.r.t. Origin, ergo we have to pre-multiply by the inverse of ref_rotation
+  // to get the new points in the Target Frame
+  Eigen::Affine3d ref_inv;
+  ref_inv = ref_rotation.inverse();
+
   std::vector<PathEndPoints> result;
-  for (const auto& s : segments)
+  for (std::size_t i = 0; i < segments.size(); ++i)
   {
-    const auto& a = s.poses.front().position;
-    const auto& b = s.poses.back().position;
-    result.push_back({a, b});
+    const auto& s = segments[i];
+    Eigen::Vector3d a = (ref_inv * s.front()).translation();
+    Eigen::Vector3d b = (ref_inv * s.back()).translation();
+    result.push_back({a, b, i});
   }
   return result;
 }
 
-SequencePoint getNextSequencePoint(const geometry_msgs::Point& current, const std::vector<SequencePoint>& so_far,
-                                   const std::vector<PathEndPoints>& path_end_points)
-{
-  SequencePoint min_dist_seq;
-  double min_dist = std::numeric_limits<double>::max();
-
-  auto already_in_sequence = [&so_far] (const int idx) {
-    for (const auto& s : so_far) {
-      if (s.id == idx) return true;
-    }
-    return false;
-  };
-
-  auto pt_dist = [](const geometry_msgs::Point& a, const geometry_msgs::Point& b)
-  {
-    return std::pow(a.x - b.x, 2) + std::pow(a.y - b.y, 2) + std::pow(a.z - b.z, 2);
-  };
-
-  for (std::size_t i = 0; i < path_end_points.size(); ++i)
-  {
-    if (!already_in_sequence(i))
-    {
-      const auto dist_to_a = pt_dist(current, path_end_points[i].a);
-      const auto dist_to_b = pt_dist(current, path_end_points[i].b);
-
-      if (dist_to_a < min_dist)
-      {
-        min_dist = dist_to_a;
-        min_dist_seq.id = i;
-        min_dist_seq.from_a = true;
-      }
-
-      if (dist_to_b < min_dist)
-      {
-        min_dist = dist_to_b;
-        min_dist_seq.id = i;
-        min_dist_seq.from_a = false;
-      }
-    }
-  }
-  return min_dist_seq;
-}
-
+/**
+ * @brief Reconstructs a set of PoseArray objects using the given set of sequence points which contain
+ * indices into the \e end_points array which reference the original \e in trajectory.
+ * @param in The original trajectory
+ * @param seqs The sequence points whose 'id' field reaches into the \e end_points vector
+ * @param end_points The set of end points whose 'id' field reaches into the \e in vector
+ * @return A new pose array constructed with the sequence ordering from the \e in trajectory
+ */
 std::vector<geometry_msgs::PoseArray> makeSequence(const std::vector<geometry_msgs::PoseArray>& in,
-                                                   const std::vector<SequencePoint>& seqs)
+                                                   const std::vector<SequencePoint>& seqs,
+                                                   const std::vector<PathEndPoints>& end_points)
 {
   assert(in.size() == seqs.size());
   std::vector<geometry_msgs::PoseArray> rs;
@@ -86,44 +88,175 @@ std::vector<geometry_msgs::PoseArray> makeSequence(const std::vector<geometry_ms
 
   for (const auto& seq : seqs)
   {
-    rs.push_back(in[seq.id]);
-    if (!seq.from_a)
+    rs.push_back(in[end_points[seq.id].id]); // seq.id points to end_points; end_points.id points to in
+    if (!seq.from_a) // The 'in' trajectory has segments that are always A to B
     {
       std::reverse(rs.back().poses.begin(), rs.back().poses.end());
     }
   }
+
   return rs;
 }
 
+/**
+ * @brief Computes the 'average' quaternion from an input set of them.
+ * See http://stackoverflow.com/questions/12374087/average-of-multiple-quaternions
+ * See http://www.acsu.buffalo.edu/~johnc/ave_quat07.pdf
+ *
+ * I don't have a great way of detecting the cases where the result isn't really meaningful,
+ * e.g. a set of rotations spread evenly through rotational space.
+ */
+Eigen::Quaterniond average(const std::vector<Eigen::Quaterniond, Eigen::aligned_allocator<Eigen::Quaterniond>>& qs)
+{
+  Eigen::MatrixXd Q (4, qs.size());
+
+  for (std::size_t i = 0; i < qs.size(); ++i)
+  {
+    Q.col(i) = qs[i].coeffs();
+  }
+
+  Eigen::MatrixXd Q_prime = Q * Q.transpose();
+
+  Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigensolver(Q_prime);
+
+  Eigen::VectorXd eigen_vals = eigensolver.eigenvalues();
+  Eigen::MatrixXd eigen_vecs = eigensolver.eigenvectors();
+
+  int max_idx = 0;
+  double max_value = 0.0;
+  for (int i = 0; i < eigen_vals.size(); ++i)
+  {
+    if (eigen_vals(i) > max_value)
+    {
+      max_idx = i;
+      max_value = eigen_vals(i);
+    }
+  }
+
+  Eigen::VectorXd coeffs = eigen_vecs.col(max_idx);
+  Eigen::Quaterniond avg_quat (coeffs(3), coeffs(0), coeffs(1), coeffs(2));
+  return avg_quat;
+}
+
+// Helpers to go from pose arrays to Eigen vectors of Poses
+EigenSTL::vector_Affine3d toEigen(const geometry_msgs::PoseArray& p)
+{
+  EigenSTL::vector_Affine3d rs (p.poses.size());
+  std::transform(p.poses.begin(), p.poses.end(), rs.begin(), [] (const geometry_msgs::Pose& pose)
+  {
+    Eigen::Affine3d e;
+    tf::poseMsgToEigen(pose, e);
+    return e;
+  });
+  return rs;
+}
+
+// Helpers to go from pose arrays to Eigen vectors of Poses
+std::vector<EigenSTL::vector_Affine3d> toEigen(const std::vector<geometry_msgs::PoseArray>& ps)
+{
+  std::vector<EigenSTL::vector_Affine3d> rs (ps.size());
+  std::transform(ps.begin(), ps.end(), rs.begin(), [] (const geometry_msgs::PoseArray& poses)
+  {
+    return toEigen(poses);
+  });
+  return rs;
+}
+
+// Gets the average quaternion rotation of a set of poses
+Eigen::Quaterniond averageQuaternion(const EigenSTL::vector_Affine3d& poses)
+{
+  std::vector<Eigen::Quaterniond, Eigen::aligned_allocator<Eigen::Quaterniond>> qs;
+  qs.reserve(poses.size());
+
+  for (const auto& p : poses)
+  {
+    qs.push_back(Eigen::Quaterniond(p.rotation()));
+  }
+
+  return average(qs);
+}
+
+/**
+ * @brief Returns the index of the path segment with the largest end-point displacement
+ * (first.position - last.position) in \e segments
+ *
+ * We assume that segments is non-empty. Will return 0 in that case.
+ */
+std::size_t longestSegment(const std::vector<EigenSTL::vector_Affine3d>& segments)
+{
+  std::size_t max_index = 0;
+  double max_dist = 0.0;
+
+  for (std::size_t i = 0; i < segments.size(); ++i)
+  {
+    auto dist = (segments[i].front().translation() - segments[i].back().translation()).squaredNorm();
+    if (dist > max_dist)
+    {
+      max_index = i;
+      max_dist = dist;
+    }
+  }
+  return max_index;
+}
+
+/**
+ * @brief Given \e input, a set of path segments, this algorithm will produce a new set of segments
+ * that is the result of re-ordering the points left to right relative to the nominal 'cut' direction.
+ */
 std::vector<geometry_msgs::PoseArray> sequence(const std::vector<geometry_msgs::PoseArray>& input)
 {
-  auto end_points = toEndPoints(input);
+  if (input.empty())
+  {
+    return {};
+  }
 
-  auto get_current_pt = [&end_points] (const SequencePoint& p) {
-    if (p.from_a)
+  auto eigen_poses = toEigen(input);
+  // We need to compute the 'nominal' cut direction of the surface paths
+  // We do that by picking the "largest" cut first
+  auto longest_segment_idx = longestSegment(eigen_poses);
+  // Then we find the average rotation
+  Eigen::Quaterniond avg_quaternion = averageQuaternion(eigen_poses[longest_segment_idx]);
+  // And get the end points of the path segments in that rotational frame, such that paths
+  // run along the X direction and are spaced out ~ in Y
+  auto end_points = toEndPoints(eigen_poses, avg_quaternion);
+
+  // Sort end points, -y to y
+  std::sort(end_points.begin(), end_points.end(), [] (const PathEndPoints& lhs, const PathEndPoints& rhs)
+  {
+    auto lhs_value = std::min(lhs.a.y(), lhs.b.y());
+    auto rhs_value = std::min(rhs.a.y(), rhs.b.y());
+    return lhs_value < rhs_value;
+  });
+
+  // A helper function to get the starting point of a transition given a sequence number and
+  // whether we started at A or B.
+  auto current_position = [&end_points](const SequencePoint& p) {
+    if (p.from_a) // If we came from A, we're now at B
       return end_points[p.id].b;
-    else
+    else // if we came from B, we're not at A
       return end_points[p.id].a;
   };
 
   std::vector<SequencePoint> sequence;
   sequence.reserve(input.size());
 
-  // Always start with the first point in the first sequence
+  // We always start at the first end_point, position A
   sequence.push_back({0, true});
 
-  for (std::size_t i = 1; i < input.size(); ++i)
+  for (std::size_t i = 1; i < end_points.size(); ++i)
   {
-    // Get the current 'point'
-    const auto& pt = get_current_pt(sequence.back());
+    // We need to determine if A or B of the next path is closer to the current position
+    const Eigen::Vector3d current_pos = current_position(sequence.back());
 
-    // Pick the minimum and add it to the sequence
-    const auto next_sequence_pt = getNextSequencePoint(pt, sequence, end_points);
-    sequence.push_back(next_sequence_pt);
+    const auto dist_a = (end_points[i].a - current_pos).squaredNorm();
+    const auto dist_b = (end_points[i].b - current_pos).squaredNorm();
+
+    const auto from_a = dist_a < dist_b;
+    sequence.push_back({i, from_a});
   }
 
-  assert(sequence.size() == input.size());
-  return makeSequence(input, sequence);
+  // Re-order the original inputs and produce a new segment.
+  return makeSequence(input, sequence, end_points);
 }
 
 tool_path_planner::ProcessTool loadTool()
@@ -173,13 +306,6 @@ bool godel_noether::NoetherPathPlanner::generatePath(
   auto process_paths = planPaths(vtk_data, tool);
   ROS_INFO("generatePath: finished planning paths");
 
-//  //Sequence Paths
-//  path_sequence_planner::SimplePathSequencePlanner sequencer;
-//  sequencer.setPaths(process_paths);
-//  sequencer.linkPaths();
-
-//  // Convert to ROS pose array types
-//  path = noether::convertVTKtoGeometryMsgs(sequencer.getPaths());
   auto paths = noether::convertVTKtoGeometryMsgs(process_paths);
   path = sequence(paths);
 
