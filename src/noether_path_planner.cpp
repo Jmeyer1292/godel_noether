@@ -43,6 +43,30 @@ struct SequencePoint
   bool from_a;
 };
 
+// Helpers to go from pose arrays to Eigen vectors of Poses
+EigenSTL::vector_Affine3d toEigen(const geometry_msgs::PoseArray& p)
+{
+  EigenSTL::vector_Affine3d rs (p.poses.size());
+  std::transform(p.poses.begin(), p.poses.end(), rs.begin(), [] (const geometry_msgs::Pose& pose)
+  {
+    Eigen::Affine3d e;
+    tf::poseMsgToEigen(pose, e);
+    return e;
+  });
+  return rs;
+}
+
+// Helpers to go from pose arrays to Eigen vectors of Poses
+std::vector<EigenSTL::vector_Affine3d> toEigen(const std::vector<geometry_msgs::PoseArray>& ps)
+{
+  std::vector<EigenSTL::vector_Affine3d> rs (ps.size());
+  std::transform(ps.begin(), ps.end(), rs.begin(), [] (const geometry_msgs::PoseArray& poses)
+  {
+    return toEigen(poses);
+  });
+  return rs;
+}
+
 /**
  * @brief From a sequence of path segments, this method extracts the end points and puts them into
  * a new reference frame. As segments are indivisible, we only need the extremes for sorting them.
@@ -71,6 +95,18 @@ std::vector<PathEndPoints> toEndPoints(const std::vector<EigenSTL::vector_Affine
   return result;
 }
 
+static void reversePathAndPoses(geometry_msgs::PoseArray& path)
+{
+  std::reverse(path.poses.begin(), path.poses.end());
+  for (auto& msg : path.poses)
+  {
+    Eigen::Affine3d eig;
+    tf::poseMsgToEigen(msg, eig);
+    eig *= Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitZ());
+    tf::poseEigenToMsg(eig, msg);
+  }
+}
+
 /**
  * @brief Reconstructs a set of PoseArray objects using the given set of sequence points which contain
  * indices into the \e end_points array which reference the original \e in trajectory.
@@ -92,7 +128,8 @@ std::vector<geometry_msgs::PoseArray> makeSequence(const std::vector<geometry_ms
     rs.push_back(in[end_points[seq.id].id]); // seq.id points to end_points; end_points.id points to in
     if (!seq.from_a) // The 'in' trajectory has segments that are always A to B
     {
-      std::reverse(rs.back().poses.begin(), rs.back().poses.end());
+//      std::reverse(rs.back().poses.begin(), rs.back().poses.end());
+      reversePathAndPoses(rs.back());
     }
   }
 
@@ -139,29 +176,6 @@ Eigen::Quaterniond average(const std::vector<Eigen::Quaterniond, Eigen::aligned_
   return avg_quat;
 }
 
-// Helpers to go from pose arrays to Eigen vectors of Poses
-EigenSTL::vector_Affine3d toEigen(const geometry_msgs::PoseArray& p)
-{
-  EigenSTL::vector_Affine3d rs (p.poses.size());
-  std::transform(p.poses.begin(), p.poses.end(), rs.begin(), [] (const geometry_msgs::Pose& pose)
-  {
-    Eigen::Affine3d e;
-    tf::poseMsgToEigen(pose, e);
-    return e;
-  });
-  return rs;
-}
-
-// Helpers to go from pose arrays to Eigen vectors of Poses
-std::vector<EigenSTL::vector_Affine3d> toEigen(const std::vector<geometry_msgs::PoseArray>& ps)
-{
-  std::vector<EigenSTL::vector_Affine3d> rs (ps.size());
-  std::transform(ps.begin(), ps.end(), rs.begin(), [] (const geometry_msgs::PoseArray& poses)
-  {
-    return toEigen(poses);
-  });
-  return rs;
-}
 
 // Gets the average quaternion rotation of a set of poses
 Eigen::Quaterniond averageQuaternion(const EigenSTL::vector_Affine3d& poses)
@@ -299,7 +313,7 @@ bool godel_noether::NoetherPathPlanner::generatePath(
 {
   ROS_INFO("Starting Noether path planning...");
   auto vtk_data = vtkSmartPointer<vtkPolyData>::New();
-  vtk_viewer::pclEncodeMeshAndNormals(mesh_, vtk_data);
+  vtk_viewer::pclEncodeMeshAndNormals(mesh_, vtk_data, 0.05);
   vtk_viewer::generateNormals(vtk_data);
   ROS_INFO("generatePath: converted mesh to VTK");
 
@@ -308,6 +322,16 @@ bool godel_noether::NoetherPathPlanner::generatePath(
   ROS_INFO("generatePath: finished planning paths");
 
   auto paths = noether::convertVTKtoGeometryMsgs(process_paths);
+
+  for (const auto& p : paths)
+  {
+    const geometry_msgs::PoseArray& arr = p;
+    if (arr.poses.size() == 1)
+    {
+      ROS_WARN("TOOL PATH WITH SIZE 1!");
+    }
+  }
+
   path = sequence(paths);
 
   ROS_INFO("generatePath: converted to ROS messages - DONE!");
