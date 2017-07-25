@@ -3,4 +3,10 @@
   <class type="godel_noether::NoetherPathPlanner" base_class_type="path_planning_plugins_base::PathPlanningBase">
   <description>Implements the Godel tool planner interface using the IR&D tool planner</description>
   </class>
+  <class type="godel_noether::NoetherBlendPathPlanner" base_class_type="path_planning_plugins_base::PathPlanningBase">
+  <description>Implements the Godel tool planner interface using the IR&D tool planner</description>
+  </class>
+  <class type="godel_noether::NoetherScanPathPlanner" base_class_type="path_planning_plugins_base::PathPlanningBase">
+  <description>Implements the Godel tool planner interface using the IR&D tool planner</description>
+  </class>
 </library>

@@ -7,6 +7,7 @@
 #include <path_sequence_planner/simple_path_sequence_planner.h>
 #include <eigen_conversions/eigen_msg.h>
 #include <Eigen/Dense>
+#include <ros/node_handle.h>
 #include <eigen_stl_containers/eigen_stl_containers.h>
 
 namespace
@@ -259,17 +260,17 @@ std::vector<geometry_msgs::PoseArray> sequence(const std::vector<geometry_msgs::
   return makeSequence(input, sequence, end_points);
 }
 
-tool_path_planner::ProcessTool loadTool()
-{
-  tool_path_planner::ProcessTool tool;
-  tool.pt_spacing = 0.01;
-  tool.line_spacing = 0.025;
-  tool.tool_offset = 0.0; // currently unused
-  tool.intersecting_plane_height = 0.05; // 0.5 works best, not sure if this should be included in the tool
-  tool.nearest_neighbors = 5; // not sure if this should be a part of the tool
-  tool.min_hole_size = 0.01;
-  return tool;
-}
+//tool_path_planner::ProcessTool loadTool()
+//{
+//  tool_path_planner::ProcessTool tool;
+//  tool.pt_spacing = 0.01;
+//  tool.line_spacing = 0.025;
+//  tool.tool_offset = 0.0; // currently unused
+//  tool.intersecting_plane_height = 0.05; // 0.5 works best, not sure if this should be included in the tool
+//  tool.nearest_neighbors = 5; // not sure if this should be a part of the tool
+//  tool.min_hole_size = 0.01;
+//  return tool;
+//}
 
 std::vector<tool_path_planner::ProcessPath>
 planPaths(vtkSmartPointer<vtkPolyData> mesh,
@@ -314,4 +315,94 @@ bool godel_noether::NoetherPathPlanner::generatePath(
   return true;
 }
 
+tool_path_planner::ProcessTool godel_noether::NoetherPathPlanner::loadTool() const
+{
+  tool_path_planner::ProcessTool tool;
+  tool.pt_spacing = 0.01;
+  tool.line_spacing = 0.025;
+  tool.tool_offset = 0.0; // currently unused
+  tool.intersecting_plane_height = 0.05; // 0.5 works best, not sure if this should be included in the tool
+  tool.nearest_neighbors = 5; // not sure if this should be a part of the tool
+  tool.min_hole_size = 0.01;
+  return tool;
+}
+
+const static std::string PARAM_BASE = "/process_planning_params/";
+const static std::string SCAN_PARAM_BASE = "scan_params/";
+const static std::string BLEND_PARAM_BASE = "blend_params/";
+
+const static std::string SPINDLE_SPD_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "spindle_speed";
+
+const static std::string APPROACH_SPD_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "approach_speed";
+const static std::string BLENDING_SPD_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "blending_speed";
+const static std::string RETRACT_SPD_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "retract_speed";
+const static std::string TRAVERSE_SPD_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "traverse_speed";
+const static std::string Z_ADJUST_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "z_adjust";
+
+const static std::string TOOL_RADIUS_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "tool_radius";
+const static std::string TOOL_OVERLAP_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "overlap";
+const static std::string DISCRETIZATION_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "discretization";
+const static std::string TRAVERSE_HEIGHT_PARAM = PARAM_BASE + BLEND_PARAM_BASE + "traverse_height";
+
+template<typename T>
+static void loadOrWarn(ros::NodeHandle& nh, const std::string& key, T& value)
+{
+  if (!nh.getParam(key, value))
+  {
+    ROS_ERROR_STREAM("Could not load parameter: " << nh.resolveName(key));
+  }
+}
+
+std::ostream& operator<<(std::ostream& os, const tool_path_planner::ProcessTool& tool)
+{
+  os << "Tool:[line_spacing:=" << tool.line_spacing << ", pt_spacing:=" << tool.pt_spacing << "]";
+  return os;
+}
+
+tool_path_planner::ProcessTool godel_noether::NoetherBlendPathPlanner::loadTool() const
+{
+  ros::NodeHandle nh;
+  tool_path_planner::ProcessTool tool = NoetherPathPlanner::loadTool();
+
+  // Compute line-spacing
+  double tool_radius = 0.025;
+  double tool_overlap = 0.0;
+  loadOrWarn(nh, TOOL_RADIUS_PARAM, tool_radius);
+  loadOrWarn(nh, TOOL_OVERLAP_PARAM, tool_overlap);
+
+  double line_spacing = std::max(0.01, tool_radius * 2.0 - tool_overlap);
+  tool.line_spacing = line_spacing;
+
+  loadOrWarn(nh, DISCRETIZATION_PARAM, tool.pt_spacing);
+  ROS_WARN_STREAM("NOETHER BLEND: " << tool);
+  return tool;
+}
+
+tool_path_planner::ProcessTool godel_noether::NoetherScanPathPlanner::loadTool() const
+{
+  ros::NodeHandle nh;
+  tool_path_planner::ProcessTool tool = NoetherPathPlanner::loadTool();
+
+  const static std::string SCAN_OVERLAP_PARAM = PARAM_BASE + SCAN_PARAM_BASE + "overlap";
+  const static std::string SCAN_WIDTH_PARAM = PARAM_BASE + SCAN_PARAM_BASE + "scan_width";
+
+
+  // Compute line-spacing
+  double scan_width = 0.025;
+  double scan_overlap = 0.0;
+  loadOrWarn(nh, SCAN_WIDTH_PARAM, scan_width);
+  loadOrWarn(nh, SCAN_OVERLAP_PARAM, scan_overlap);
+
+  double line_spacing = std::max(0.01, scan_width - scan_overlap);
+  tool.line_spacing = line_spacing;
+
+  loadOrWarn(nh, DISCRETIZATION_PARAM, tool.pt_spacing);
+  ROS_WARN_STREAM("NOETHER SCAN: " << tool);
+  return tool;
+}
+
 PLUGINLIB_EXPORT_CLASS(godel_noether::NoetherPathPlanner, path_planning_plugins_base::PathPlanningBase)
+
+PLUGINLIB_EXPORT_CLASS(godel_noether::NoetherBlendPathPlanner, path_planning_plugins_base::PathPlanningBase)
+
+PLUGINLIB_EXPORT_CLASS(godel_noether::NoetherScanPathPlanner, path_planning_plugins_base::PathPlanningBase)
