@@ -274,18 +274,6 @@ std::vector<geometry_msgs::PoseArray> sequence(const std::vector<geometry_msgs::
   return makeSequence(input, sequence, end_points);
 }
 
-//tool_path_planner::ProcessTool loadTool()
-//{
-//  tool_path_planner::ProcessTool tool;
-//  tool.pt_spacing = 0.01;
-//  tool.line_spacing = 0.025;
-//  tool.tool_offset = 0.0; // currently unused
-//  tool.intersecting_plane_height = 0.05; // 0.5 works best, not sure if this should be included in the tool
-//  tool.nearest_neighbors = 5; // not sure if this should be a part of the tool
-//  tool.min_hole_size = 0.01;
-//  return tool;
-//}
-
 std::vector<tool_path_planner::ProcessPath>
 planPaths(vtkSmartPointer<vtkPolyData> mesh,
           const tool_path_planner::ProcessTool& tool)
