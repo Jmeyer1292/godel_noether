@@ -311,15 +311,6 @@ bool godel_noether::NoetherPathPlanner::generatePath(
 
   auto paths = noether::convertVTKtoGeometryMsgs(process_paths);
 
-  for (const auto& p : paths)
-  {
-    const geometry_msgs::PoseArray& arr = p;
-    if (arr.poses.size() == 1)
-    {
-      ROS_WARN("TOOL PATH WITH SIZE 1!");
-    }
-  }
-
   path = sequence(paths);
 
   ROS_INFO("generatePath: converted to ROS messages - DONE!");
