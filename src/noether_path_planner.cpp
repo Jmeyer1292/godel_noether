@@ -67,6 +67,18 @@ std::vector<EigenSTL::vector_Affine3d> toEigen(const std::vector<geometry_msgs::
   return rs;
 }
 
+geometry_msgs::PoseArray toMsg(const EigenSTL::vector_Affine3d& p)
+{
+  geometry_msgs::PoseArray msg;
+  msg.poses.resize(p.size());
+  std::transform(p.begin(), p.end(), msg.poses.begin(), [] (const Eigen::Affine3d& pose) {
+    geometry_msgs::Pose pose_msg;
+    tf::poseEigenToMsg(pose, pose_msg);
+    return pose_msg;
+  });
+  return msg;
+}
+
 /**
  * @brief From a sequence of path segments, this method extracts the end points and puts them into
  * a new reference frame. As segments are indivisible, we only need the extremes for sorting them.
@@ -289,6 +301,122 @@ planPaths(vtkSmartPointer<vtkPolyData> mesh,
   return paths.front();
 }
 
+// MARGIN CODE
+double pointDistance(const Eigen::Affine3d& a, const Eigen::Affine3d& b)
+{
+  return (a.translation() - b.translation()).norm();
+}
+
+double segmentLength(const EigenSTL::vector_Affine3d& segment)
+{
+  double length = 0.0;
+  for (std::size_t i = 1; i < segment.size(); ++i)
+  {
+    length += pointDistance(segment[i], segment[i-1]);
+  }
+  return length;
+}
+
+bool approxEqual(const double a, const double b, const double eps = 1e-3)
+{
+  return std::fabs(a - b) < eps;
+}
+
+EigenSTL::vector_Affine3d applyMargins(const EigenSTL::vector_Affine3d& segment, const double offset)
+{
+  const auto length = segmentLength(segment);
+  if (length < 2.0 * offset)
+    return segment; // return identity - don't modify this path
+
+  // If we know our path is long enough, let's find where it should be
+  double distance_to_go = offset;
+  std::size_t forward_index = 0;
+  double forward_dist = 0.0;
+
+  for (std::size_t i = 1; i < segment.size(); ++i)
+  {
+    const auto segment_dist = pointDistance(segment[i], segment[i-1]);
+    if (approxEqual(segment_dist, distance_to_go))
+    {
+      std::cout << "Approx equal\n";
+      forward_index = i;
+      forward_dist = 0.0;
+      break;
+    }
+    else if (distance_to_go > segment_dist) {
+      distance_to_go -= segment_dist;
+    } else {
+      // We found our point - it's between i and i-1
+      forward_index = i;
+      forward_dist = distance_to_go;
+      std::cout << "Dist to go: " << distance_to_go << "\n";
+      break;
+    }
+  }
+
+  if (forward_index == 0) throw std::logic_error("Something went wrong with margins");
+
+  // find the reverse point
+  distance_to_go = offset;
+  std::size_t reverse_index = segment.size() - 1;
+  double reverse_dist = 0.0;
+
+  for (std::size_t i = segment.size() - 1; i > 0; --i)
+  {
+    const auto idx = i - 1;
+    const auto segment_dist = pointDistance(segment[idx], segment[idx+1]);
+    if (approxEqual(segment_dist, distance_to_go))
+    {
+      reverse_index = idx;
+      reverse_dist = 0.0;
+      break;
+    }
+    else if (distance_to_go > segment_dist) {
+      distance_to_go -= segment_dist;
+    } else {
+      reverse_index = idx;
+      reverse_dist = distance_to_go;
+      break;
+    }
+  }
+
+  if (reverse_index == segment.size() - 1) throw std::logic_error("Something went wrong with margins (reverse)");
+
+  auto interp = [] (const Eigen::Affine3d& start, const Eigen::Affine3d& end, double dist)
+  {
+    Eigen::Affine3d new_pt;
+    new_pt.translation() = start.translation() + (end.translation() - start.translation()).normalized() * dist;
+    new_pt.linear() = start.rotation();
+    return new_pt;
+  };
+
+  Eigen::Affine3d new_start = interp(segment[forward_index-1], segment[forward_index], forward_dist);
+  Eigen::Affine3d new_end = interp(segment[reverse_index+1], segment[reverse_index], reverse_dist);
+
+  EigenSTL::vector_Affine3d new_segment;
+  if (forward_dist != 0.0) new_segment.push_back(new_start);
+
+  for (std::size_t i = forward_index; i <= reverse_index; ++i)
+    new_segment.push_back(segment[i]);
+
+  if (reverse_dist != 0.0) new_segment.push_back(new_end);
+  return new_segment;
+}
+
+std::vector<geometry_msgs::PoseArray> applyMargins(const std::vector<geometry_msgs::PoseArray>& paths,
+                                                   const double offset)
+{
+  std::vector<EigenSTL::vector_Affine3d> segments = toEigen(paths);
+  std::vector<geometry_msgs::PoseArray> result;
+
+  for (const auto& segment : segments)
+  {
+    auto with_margins = applyMargins(segment, offset);
+    result.push_back(toMsg(with_margins));
+  }
+  return result;
+}
+
 } // anon namespace
 
 void godel_noether::NoetherPathPlanner::init(pcl::PolygonMesh mesh)
@@ -310,6 +438,8 @@ bool godel_noether::NoetherPathPlanner::generatePath(
   ROS_INFO("generatePath: finished planning paths");
 
   auto paths = noether::convertVTKtoGeometryMsgs(process_paths);
+
+  paths = applyMargins(paths, 0.25 * 0.0254);
 
   path = sequence(paths);
 
